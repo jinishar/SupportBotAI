@@ -2,10 +2,27 @@ import os, sys, tempfile, json
 import streamlit as st
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-sys.path.insert(0, os.path.dirname(__file__))
+# ── Inline config (replaces config/config.py) ─────────────────────────────
+try:
+    GROQ_API_KEY   = st.secrets["GROQ_API_KEY"]
+    TAVILY_API_KEY = st.secrets.get("TAVILY_API_KEY", "")
+except:
+    from dotenv import load_dotenv
+    load_dotenv()
+    GROQ_API_KEY   = os.getenv("GROQ_API_KEY", "")
+    TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
 
-from appconfig.config import APP_TITLE, APP_ICON
+GROQ_MODEL         = "llama-3.1-8b-instant"
+CHROMA_PERSIST_DIR = "chroma_db"
+CHUNK_SIZE         = 500
+CHUNK_OVERLAP      = 50
+APP_TITLE          = "SupportAI – Customer Support Bot"
+APP_ICON           = "🤖"
+MAX_SEARCH_RESULTS = 3
+
+# ── Path fix ───────────────────────────────────────────────────────────────
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 from models.llm import get_groq_model
 from utils.rag import build_vector_store, load_vector_store, retrieve_context
 from utils.web_search import web_search
