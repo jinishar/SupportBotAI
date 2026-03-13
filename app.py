@@ -2,7 +2,7 @@ import os, sys, tempfile, json
 import streamlit as st
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 
-# ── Inline config (replaces config/config.py) ─────────────────────────────
+# ── Config ────────────────────────────────────────────────────────────────────
 try:
     GROQ_API_KEY   = st.secrets["GROQ_API_KEY"]
     TAVILY_API_KEY = st.secrets.get("TAVILY_API_KEY", "")
@@ -20,24 +20,131 @@ APP_TITLE          = "SupportAI – Customer Support Bot"
 APP_ICON           = "🤖"
 MAX_SEARCH_RESULTS = 3
 
-# ── Path fix ───────────────────────────────────────────────────────────────
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# ── LLM ───────────────────────────────────────────────────────────────────────
+from langchain_groq import ChatGroq
 
-from models.llm import get_groq_model
-from utils.rag import build_vector_store, load_vector_store, retrieve_context
-from utils.web_search import web_search
-from utils.prompt_builder import build_system_prompt
-from utils.translator import LANGUAGES, translate_text
-from utils.followup import generate_followup_questions
+def get_groq_model():
+    if not GROQ_API_KEY:
+        raise ValueError("GROQ_API_KEY not set.")
+    return ChatGroq(api_key=GROQ_API_KEY, model_name=GROQ_MODEL)
 
+# ── Embeddings ────────────────────────────────────────────────────────────────
+from langchain_community.embeddings import SentenceTransformerEmbeddings
+
+def get_embedding_model():
+    return SentenceTransformerEmbeddings(model_name="all-MiniLM-L6-v2")
+
+# ── RAG ───────────────────────────────────────────────────────────────────────
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_community.vectorstores import Chroma
+from langchain_community.document_loaders import PyPDFLoader, TextLoader, Docx2txtLoader
+
+LOADERS = {".pdf": PyPDFLoader, ".txt": TextLoader, ".docx": Docx2txtLoader}
+
+def load_documents(file_paths):
+    docs = []
+    for path in file_paths:
+        ext = os.path.splitext(path)[-1].lower()
+        loader_cls = LOADERS.get(ext)
+        if not loader_cls:
+            continue
+        try:
+            docs.extend(loader_cls(path).load())
+        except Exception as e:
+            print(f"[RAG] Error loading {path}: {e}")
+    return docs
+
+def build_vector_store(file_paths):
+    docs = load_documents(file_paths)
+    splitter = RecursiveCharacterTextSplitter(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)
+    chunks = splitter.split_documents(docs)
+    return Chroma.from_documents(documents=chunks, embedding=get_embedding_model(), persist_directory=CHROMA_PERSIST_DIR)
+
+def load_vector_store():
+    if not os.path.exists(CHROMA_PERSIST_DIR):
+        return None
+    try:
+        return Chroma(persist_directory=CHROMA_PERSIST_DIR, embedding_function=get_embedding_model())
+    except Exception as e:
+        print(f"[RAG] Could not load vector store: {e}")
+        return None
+
+def retrieve_context(query, vector_store, k=4):
+    try:
+        results = vector_store.similarity_search(query, k=k)
+        return "\n\n".join(doc.page_content for doc in results)
+    except Exception as e:
+        return ""
+
+# ── Web Search ────────────────────────────────────────────────────────────────
+def web_search(query):
+    if not TAVILY_API_KEY:
+        return ""
+    try:
+        from tavily import TavilyClient
+        client = TavilyClient(api_key=TAVILY_API_KEY)
+        results = client.search(query=query, max_results=MAX_SEARCH_RESULTS, search_depth="basic")
+        snippets = []
+        for r in results.get("results", []):
+            snippets.append(f"**{r.get('title','')}**\n{r.get('content','')}\nSource: {r.get('url','')}")
+        return "\n\n".join(snippets)
+    except Exception as e:
+        return ""
+
+# ── Prompt Builder ────────────────────────────────────────────────────────────
+def build_system_prompt(response_mode, rag_context="", web_context=""):
+    base = "You are a helpful customer support assistant."
+    if response_mode == "Concise":
+        base += " Keep answers short and to the point."
+    else:
+        base += " Give detailed, thorough answers."
+    if rag_context:
+        base += f"\n\nRelevant documents:\n{rag_context}"
+    if web_context:
+        base += f"\n\nWeb search results:\n{web_context}"
+    return base
+
+# ── Translator ────────────────────────────────────────────────────────────────
+LANGUAGES = {
+    "English": "en", "Hindi": "hi", "Malayalam": "ml",
+    "Kannada": "kn", "German": "de",
+}
+
+def translate_text(text, target_lang):
+    if target_lang == "en" or not text.strip():
+        return text
+    try:
+        from deep_translator import GoogleTranslator
+        return GoogleTranslator(source="auto", target=target_lang).translate(text)
+    except Exception as e:
+        return text
+
+# ── Follow-up ─────────────────────────────────────────────────────────────────
+def generate_followup_questions(chat_model, user_message, bot_response):
+    try:
+        prompt = f"""Based on this customer support conversation, suggest exactly 3 short follow-up questions.
+Return ONLY a JSON array of 3 strings. Example: ["Question 1?", "Question 2?", "Question 3?"]
+
+User asked: {user_message}
+Bot answered: {bot_response}
+
+JSON array:"""
+        response = chat_model.invoke([HumanMessage(content=prompt)])
+        text = response.content.strip()
+        start = text.find("[")
+        end = text.rfind("]") + 1
+        if start != -1 and end != 0:
+            return json.loads(text[start:end])[:3]
+        return []
+    except:
+        return []
+
+# ── Streamlit App ─────────────────────────────────────────────────────────────
 st.set_page_config(page_title=APP_TITLE, page_icon=APP_ICON, layout="wide")
 
-# ── Session state ─────────────────────────────────────────────────────────────
 defaults = {
-    "messages": [],
-    "vector_store": None,
-    "docs_loaded": False,
-    "followup_questions": [],
+    "messages": [], "vector_store": None,
+    "docs_loaded": False, "followup_questions": [],
 }
 for k, v in defaults.items():
     if k not in st.session_state:
@@ -45,9 +152,8 @@ for k, v in defaults.items():
 
 if st.session_state.vector_store is None:
     st.session_state.vector_store = load_vector_store()
-    st.session_state.docs_loaded  = st.session_state.vector_store is not None
+    st.session_state.docs_loaded = st.session_state.vector_store is not None
 
-# ── Streaming response ────────────────────────────────────────────────────────
 def stream_response(chat_model, messages, system_prompt):
     try:
         formatted = [SystemMessage(content=system_prompt)]
@@ -68,69 +174,45 @@ def stream_response(chat_model, messages, system_prompt):
         st.error(f"Error: {e}")
         return ""
 
-# ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.title("SupportAI")
     st.caption("Powered by Groq · RAG · Web Search")
     st.divider()
-
     page = st.radio("Navigate", ["Chat", "Upload Documents", "Instructions"])
     st.divider()
-
     st.subheader("Language")
     selected_lang_name = st.selectbox("Response language:", list(LANGUAGES.keys()), index=0)
     selected_lang_code = LANGUAGES[selected_lang_name]
-
     st.subheader("Response Mode")
     response_mode = st.radio("Reply style:", ["Concise", "Detailed"], index=0)
-
     st.subheader("Live Web Search")
     use_web_search = st.toggle("Enable web search", value=False)
-
     st.divider()
     if st.button("Clear Chat", use_container_width=True):
         st.session_state.messages = []
         st.session_state.followup_questions = []
         st.rerun()
-
     st.caption(f"Docs: {'Loaded' if st.session_state.docs_loaded else 'None'}")
     st.caption(f"Web search: {'On' if use_web_search else 'Off'}")
     st.caption(f"Mode: {response_mode}")
     st.caption(f"Lang: {selected_lang_name}")
 
-# ── Instructions ──────────────────────────────────────────────────────────────
 if "Instructions" in page:
     st.title("How to Use SupportAI")
     st.markdown("""
-## Setup
-### 1. Install dependencies
-```bash
-pip install -r requirements.txt
-```
-### 2. Keys are already set in `config/config.py`
----
 ## Features
 | Feature | How to use |
 |---|---|
 | **Chat** | Go to Chat and type your question |
 | **RAG** | Upload docs in Upload, then ask questions about them |
 | **Web Search** | Toggle in sidebar for live answers |
-| **Response Mode** | Switch Concise / Detailed in sidebar |
 | **Language** | Select response language in sidebar |
 | **Follow-up** | Click suggested questions after each reply |
 """)
 
-# ── Upload Documents ──────────────────────────────────────────────────────────
 elif "Upload" in page:
     st.title("Upload Knowledge Base Documents")
-    st.markdown("Upload support documents (FAQs, manuals, policies). The bot will use them to answer questions.")
-
-    uploaded_files = st.file_uploader(
-        "Choose files (PDF, TXT, DOCX)",
-        type=["pdf", "txt", "docx"],
-        accept_multiple_files=True
-    )
-
+    uploaded_files = st.file_uploader("Choose files (PDF, TXT, DOCX)", type=["pdf", "txt", "docx"], accept_multiple_files=True)
     if uploaded_files:
         if st.button("Process & Index Documents", type="primary"):
             with st.spinner("Indexing documents..."):
@@ -142,7 +224,7 @@ elif "Upload" in page:
                             tmp.write(uf.read())
                             temp_paths.append(tmp.name)
                     st.session_state.vector_store = build_vector_store(temp_paths)
-                    st.session_state.docs_loaded  = True
+                    st.session_state.docs_loaded = True
                     for p in temp_paths:
                         try: os.unlink(p)
                         except: pass
@@ -151,35 +233,29 @@ elif "Upload" in page:
                     st.error(f"Error: {e}")
     else:
         st.info("Upload files above then click Process & Index.")
-
     if st.session_state.docs_loaded:
         st.divider()
         st.success("Knowledge base active. Go to Chat to ask questions.")
         if st.button("Clear Knowledge Base"):
             import shutil
-            from config.config import CHROMA_PERSIST_DIR
             shutil.rmtree(CHROMA_PERSIST_DIR, ignore_errors=True)
             st.session_state.vector_store = None
-            st.session_state.docs_loaded  = False
+            st.session_state.docs_loaded = False
             st.rerun()
 
-# ── Chat ──────────────────────────────────────────────────────────────────────
 else:
     st.title("SupportAI - Customer Support")
     st.caption("Ask me anything about our products, policies, or how to get help.")
-
     try:
         chat_model = get_groq_model()
     except ValueError as e:
         st.error(str(e))
         st.stop()
 
-    # Display chat history
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    # Follow-up suggestions
     if st.session_state.followup_questions:
         st.markdown("**You might also want to ask:**")
         cols = st.columns(len(st.session_state.followup_questions))
@@ -190,35 +266,25 @@ else:
                     st.session_state.messages.append({"role": "user", "content": q})
                     st.rerun()
 
-    # Chat input
     if prompt := st.chat_input("Type your question here..."):
         english_prompt = translate_text(prompt, "en") if selected_lang_code != "en" else prompt
-
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user", avatar="🧑"):
             st.markdown(prompt)
-
         with st.chat_message("assistant"):
             with st.spinner("SupportAI is typing..."):
                 rag_context = retrieve_context(english_prompt, st.session_state.vector_store) if st.session_state.vector_store else ""
                 web_context = web_search(english_prompt) if use_web_search else ""
                 system_prompt = build_system_prompt(response_mode, rag_context, web_context)
-
             response = stream_response(chat_model, st.session_state.messages, system_prompt)
-
             if selected_lang_code != "en" and response:
                 response = translate_text(response, selected_lang_code)
                 st.markdown(response)
-
             badges = []
             if rag_context: badges.append("From your docs")
             if web_context: badges.append("Web search used")
             if selected_lang_code != "en": badges.append(f"{selected_lang_name}")
             if badges: st.caption(" · ".join(badges))
-
         st.session_state.messages.append({"role": "assistant", "content": response})
-
-        st.session_state.followup_questions = generate_followup_questions(
-            chat_model, english_prompt, response
-        )
+        st.session_state.followup_questions = generate_followup_questions(chat_model, english_prompt, response)
         st.rerun()
