@@ -2,7 +2,7 @@ import os, sys, tempfile, json
 import streamlit as st
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 
-sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config.config import APP_TITLE, APP_ICON
 from models.llm import get_groq_model
