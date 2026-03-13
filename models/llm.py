@@ -1,13 +1,16 @@
-import os, sys
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
+import os
 from langchain_groq import ChatGroq
-from config.config import GROQ_API_KEY, GROQ_MODEL
 
-def get_groq_model() -> ChatGroq:
-    if not GROQ_API_KEY:
-        raise ValueError("GROQ_API_KEY is not set. Add it to config/config.py.")
+def get_groq_model():
     try:
-        return ChatGroq(api_key=GROQ_API_KEY, model=GROQ_MODEL, temperature=0.3)
-    except Exception as e:
-        raise RuntimeError(f"Failed to initialise Groq model: {e}")
+        import streamlit as st
+        api_key = st.secrets["GROQ_API_KEY"]
+    except:
+        from dotenv import load_dotenv
+        load_dotenv()
+        api_key = os.getenv("GROQ_API_KEY", "")
+    
+    if not api_key:
+        raise ValueError("GROQ_API_KEY not set.")
+    
+    return ChatGroq(api_key=api_key, model_name="llama-3.1-8b-instant")
