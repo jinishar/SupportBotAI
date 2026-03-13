@@ -1,0 +1,13 @@
+streamlit
+langchain
+langchain-core
+langchain-groq
+langchain-community
+langchain-chroma
+langchain-text-splitters
+chromadb
+sentence-transformers
+tavily-python
+pypdf
+docx2txt
+tiktoken
