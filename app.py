@@ -5,7 +5,7 @@ from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
 
-from config.config import APP_TITLE, APP_ICON
+from appconfig.config import APP_TITLE, APP_ICON
 from models.llm import get_groq_model
 from utils.rag import build_vector_store, load_vector_store, retrieve_context
 from utils.web_search import web_search
