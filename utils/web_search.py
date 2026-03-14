@@ -2,11 +2,8 @@ import os
 from tavily import TavilyClient
 
 def web_search(query: str) -> str:
-    try:
-        import streamlit as st
-        api_key = st.secrets.get("TAVILY_API_KEY", "")
-    except:
-        api_key = os.getenv("TAVILY_API_KEY", "")
+    import streamlit as st
+    api_key = st.secrets.get("TAVILY_API_KEY", "")
     
     if not api_key:
         return ""

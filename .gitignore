@@ -4,4 +4,4 @@ __pycache__/
 chroma_db/
 venv/
 .venv/
-config/config.py
+.streamlit/secrets.toml
